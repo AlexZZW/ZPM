@@ -1,0 +1,38 @@
+{
+    "cvpc": {
+        "default": [{
+                "repo": "zxcsp/csp",
+                "branch": "master",
+                "commit": null,
+                "path": "zxcsp/csp",
+                "depend": null
+            },
+            {
+                "repo": "zxcsp/chip_x86_II"
+            },
+            {
+                "repo": "zxcsp/packages"
+            },
+            {
+                "repo": "zxcsp/product"
+            },
+            {
+                "repo": "zxcsp/csp/include",
+                "depend": "zxcsp/csp"
+            },
+            {
+                "repo": "zxcsp/csp/opensource",
+                "depend": "zxcsp/csp"
+            },
+            {
+                "repo": "zxcsp/vertools",
+                "path": "zxcsp/csp/vertools",
+                "depend": "zxcsp/csp"
+            },
+            {
+                "repo": "zxcsp/csp/tdd",
+                "depend": "zxcsp/csp"
+            }
+        ]
+    }
+}

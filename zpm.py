@@ -1,5 +1,3 @@
-ZPM
-
 # !/usr/bin/python3
 # -*- coding:utf-8 _*-
 """
@@ -12,6 +10,7 @@ author:10186954
 """
 import csv
 import json
+import logging
 import random
 import string
 import sys, os
@@ -23,10 +22,18 @@ import tempfile
 
 import time, datetime
 
-global user_id
-user_id = None
-home_path = os.path.expanduser('~')
-log_file = os.path.join(home_path, '.zpm', 'logs.json')
+logging.basicConfig(level=logging.DEBUG)
+
+CUR_DIR = os.getcwd()
+HOME_DIR = os.path.expanduser('~')
+RANDOM_NAME = ''.join(random.sample(string.ascii_letters + string.digits, 8))
+CONF_FILE_NAME = 'config.json'
+CONF_FILE_1ST = os.path.join(CUR_DIR, CONF_FILE_NAME)
+CONF_FILE_2ND = os.path.join(HOME_DIR, CONF_FILE_NAME)
+CONF_FILE_3RD = os.path.join(HOME_DIR, '.zpm', 'repo', 'resources', CONF_FILE_NAME)
+LOCAL_CACHE_DIR = os.path.join(HOME_DIR, '.zpm', 'cache')
+GIT_CONF_FILE = os.path.join(HOME_DIR, '.gitconfig')
+log_file = os.path.join(HOME_DIR, '.zpm', 'logs.json')
 
 
 def big_execl(cmd):
@@ -56,154 +63,115 @@ def execl(cmd, print_res):
         return None
 
 
-def get_id(name):
-    find = re.compile(r'\d{8}')
-    id = find.findall(name)
-    return id[0]
-
-
 def get_git_conf():
-    global user_id
-    if user_id is not None:
-        return user_id
-    git_conf_file = os.path.join(home_path, '.gitconfig')
-    if not os.path.isfile(git_conf_file):
-        return None
-    with open(git_conf_file, 'r') as f:
+    pattern = re.compile(r'\d{8}')
+    with open(GIT_CONF_FILE, 'r') as f:
         for line in f.readlines():
             if 'name' in line.strip():
-                id = get_id(line.strip())
-                user_id = id
-                return id
+                ids = pattern.findall(line.strip())
+                logging.debug(f'get git config id:{ids}')
+                return ids[0]
+    assert False, 'Git is not configured.See git config --list for more infomation.'
 
 
 def change_id(cmd):
-    id = get_git_conf()
-    if id is None:
-        return None
-    data = re.sub(r'12345678', id, cmd)
+    data = re.sub(r'12345678', get_git_conf(), cmd)
     return data
 
 
-class zpm_pull(object):
-    def __init__(self, pdt, tag, path, local, ci, update, name, print):
+class ZpmPull(object):
+    def __init__(self, pdt, tag, path, local, ci, update, name, info):
         self.pdt = pdt
         self.tag = tag
-        self.path = path
+        self.path = path if os.path.isabs(path) else os.path.abspath(os.path.join(CUR_DIR, path))
         self.local = local
         self.ci = ci
         self.update = update
         self.name = name
-        self.print = print
-        self.cmd_path = os.getcwd()
-        self.code_path = ''
-        self.id = ''
-        self.result = ''
+        self.info = info
 
-    def get_path(self):
-        if self.path is None:
-            self.code_path = self.cmd_path
-        elif os.path.isabs(self.path):
-            self.code_path = self.path
+    @staticmethod
+    def get_config():
+        if os.path.isfile(CONF_FILE_1ST):
+            conf_file = CONF_FILE_1ST
+        elif os.path.isfile(CONF_FILE_2ND):
+            conf_file = CONF_FILE_2ND
+        elif os.path.isfile(CONF_FILE_3RD):
+            conf_file = CONF_FILE_3RD
         else:
-            self.code_path = os.path.abspath(os.path.join(self.cmd_path, self.path))
-        if not os.path.isdir(self.code_path):
-            os.makedirs(self.code_path)
-
-    def get_config(self):
-        config_file = os.path.join(home_path, 'config.json')
-        if not os.path.isfile(config_file):
-            config_file = os.path.join(home_path, '.zpm', 'repo', 'resources', 'config.json')
-            if not os.path.isfile(config_file):
-                print('no config found,run "zpm config -i" first')
-                return None
-        with open(config_file, 'r') as f:
-            load_dict = json.load(f)
-        return load_dict
-
-    def get_local_clone(self, cmd_b, git_path, path):
-        return '@git clone -q ' + cmd_b + git_path + ' ' + path
+            conf_file = None
+        assert conf_file is not None, 'No config file found,run "zpm config -i" first'
+        logging.warning(f'load config from {conf_file}')
+        with open(conf_file, 'r') as f:
+            conf_data = json.load(f)
+        return conf_data
 
     def get_remote_clone(self, cmd_b, repo, path, output=False):
-        if output:
-            flag = ''
-        else:
-            flag = '@'
+        flag = '' if output else '@'
+        domain_public = 'xxxxxxxx@xxx.com.cn'
+        domain_private = '12345678@xxx.com.cn'
+        port = '29418'
         if self.ci:
-            cmd1 = flag + 'git clone -q ' + cmd_b
-            cmd2 = 'ssh://xxx@xxx.com.cn:29418/' + repo
-            cmd_full = cmd1 + cmd2 + ' ' + path
+            return f'{flag}git clone -q {cmd_b} ssh://{domain_public}:{port}/{repo} {path}'
         else:
-            cmd1 = flag + "git clone -q " + cmd_b + "ssh://12345678@xxx.com.cn:29418/"
-            cmd2 = '&& git config --global url."ssh://12345678@xxx.com.cn".pushInsteadOf \
-                    ssh://12345678@xxx.com.cn \
-                    && scp -p -P 29418 12345678@xxx.com.cn:hooks/commit-msg'
-            cmd3 = '/.git/hooks/'
-            cmd_full = cmd1 + repo + ' ' + path + ' ' + cmd2 + ' ' + path + cmd3
-            cmd_full = change_id(cmd_full)
-        return cmd_full
+            hook_cmd = f'&& git config --global url."ssh://{domain_private}".pushInsteadOf \
+                    ssh://{domain_private} && scp -p -P {port} {domain_private}:hooks/commit-msg'
+            cmd_full = f'{flag}git clone -q {cmd_b} ssh://{domain_private}:{port}/{repo} {path} \
+                        {hook_cmd} {path}/.git/hooks/'
+            return change_id(cmd_full)
 
     def update_cache(self, cache_path, branch):
-        if not self.update:
-            return
-        os.chdir(cache_path)
-        if branch is not None:
-            cmd = 'git checkout -q ' + branch
-        else:
-            cmd = 'git checkout -q master'
-        print('update_cache')
-        os.system(cmd)
-        os.system('git pull -q')
-        os.chdir(self.code_path)
+        if self.update:
+            os.chdir(cache_path)
+            if branch is not None:
+                cmd = 'git checkout -q ' + branch
+            else:
+                cmd = 'git checkout -q master'
+            logging.warning(f'update_cache in {cache_path} branch:{branch}')
+            os.system(cmd)
+            os.system('git pull -q')
+            os.chdir(self.path)
 
     def download_cache(self, cmd_b, repo, path, cache_path):
+        logging.warning(f'download_cache for {repo}')
         cmd = self.get_remote_clone(cmd_b, repo, path, True)
         del_cmd = 'rm -rf ' + cache_path
-        cache_root_path = os.path.join(home_path, '.zpm', 'cache')
-        os.chdir(cache_root_path)
+        os.chdir(LOCAL_CACHE_DIR)
         os.system(del_cmd)
         os.system(cmd)
-        os.chdir(self.code_path)
+        os.chdir(self.path)
 
-    def get_git_cmd(self, repo, path=None, branch=None):
-        if path is None:
-            path = repo
-        cmd_b = ''
-        if branch is not None:
-            cmd_b = ' -b ' + branch + ' '
-        if self.local:
-            cache_path = os.path.join(home_path, '.zpm', 'cache', path)
+    def get_git_cmd(self, repo, path, branch=None):
+        cmd_b = f' -b {branch} ' if branch is not None else ''
+        if self.local:  # 从本地缓存git目录clone,加速下载
+            cache_path = os.path.join(LOCAL_CACHE_DIR, path)
             git_path = os.path.join(cache_path, '.git')
-            if os.path.isdir(git_path):
+            if os.path.isdir(git_path):  # local git缓存库已经存在
                 self.update_cache(cache_path, branch)
             else:
-                print('download_cache')
                 self.download_cache(cmd_b, repo, path, cache_path)
-            cmd_full = self.get_local_clone(cmd_b, git_path, path)
+            cmd_full = f'@git clone -q {cmd_b} {git_path} {path}'
         else:
             cmd_full = self.get_remote_clone(cmd_b, repo, path)
         return cmd_full
 
-    def generate_makefile(self, data_json):
+    def gen_makefile(self, repo_infos):
         m = open("Makefile", "w")
         m.write(" # This file is generated by zpm, do not edit!\n")
         m.write(".PHONY:all\n")
-        for info in (data_json[self.pdt][self.tag]):
+        for info in repo_infos:
             m.write(".PHONY:%s\n" % (info['repo']))
         m.write("\n# targets\n")
-        for info in (data_json[self.pdt][self.tag]):
+        for info in repo_infos:
             m.write("all:%s\n" % (info['repo']))
         m.write("\n# dependences\n")
-        for info in (data_json[self.pdt][self.tag]):
+        for info in repo_infos:
             if 'depend' in info and info['depend'] is not None:
                 m.write("%s:%s\n" % (info['repo'], info['depend']))
             else:
                 m.write("%s:\n" % (info['repo']))
             m.write("\t@echo $@\n")
-            if 'path' in info and info['path'] is not None:
-                sub_path = info['path']
-            else:
-                sub_path = info['repo']
+            sub_path = info['path'] if 'path' in info and info['path'] is not None else info['repo']
             if 'branch' in info and info['branch'] is not None:
                 cmd = self.get_git_cmd(info['repo'], sub_path, info['branch'])
             else:
@@ -214,48 +182,28 @@ class zpm_pull(object):
             m.write("\n")
         m.close()
 
-    def generate_verinfo(self, data_json):
-        os.chdir(self.code_path)
+    def gen_verinfo(self, repo_infos):
         git_cmd = 'git log -1 --pretty=format:%h'
-        dict = {}
-        # v = open("verinfo", "w")
-        for info in (data_json[self.pdt][self.tag]):
-            if 'path' in info and info['path'] is not None:
-                sub_path = info['path']
-            else:
-                sub_path = info['repo']
-            # v.write("%s\n" % sub_path)
+        commit_infos = {}
+        for info in repo_infos:
+            sub_path = info['path'] if 'path' in info and info['path'] is not None else info['repo']
             os.chdir(sub_path)
             commit = execl(git_cmd, False)
-            # v.write("%s\n\n" % commit)
-            dict[sub_path] = commit
-            os.chdir(self.code_path)
+            commit_infos[sub_path] = commit
+            os.chdir(self.path)
         with open('verinfo', 'w') as f:
-            json.dump(dict, f)
-        # v.close()
-
-    def get_name_date(self):
-        nowTime = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        if self.name is not None:
-            return self.name[0], nowTime
-        else:
-            ran_str = ''.join(random.sample(string.ascii_letters + string.digits, 8))
-            return ran_str, nowTime
+            json.dump(commit_infos, f)
 
     def write_logs(self):
-        name, date = self.get_name_date()
-        if self.local is True:
-            push = 'NO'
-        else:
-            push = 'YES'
+        push = 'NO' if self.local is True else 'YES'
         data = {
-            'name': name,
+            'name': self.name,
             'version': self.pdt + ':' + self.tag,
-            'date': date,
+            'date': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'push': push,
-            'path': self.code_path
+            'path': self.path
         }
-        print(data)
+        logging.debug(data)
         return
         f = open(log_file, 'r')
         logs = json.load(f)
@@ -266,7 +214,7 @@ class zpm_pull(object):
         f.close()
 
     def print_head(self, data_json):
-        os.chdir(self.code_path)
+        os.chdir(self.path)
         git_cmd = 'git log -1 --oneline'
         for info in (data_json[self.pdt][self.tag]):
             if 'path' in info and info['path'] is not None:
@@ -276,27 +224,23 @@ class zpm_pull(object):
             print(sub_path)
             os.chdir(sub_path)
             execl(git_cmd, True)
-            os.chdir(self.code_path)
+            os.chdir(self.path)
 
     def run(self):
         data_json = self.get_config()
-        if data_json is None:
-            return
-        self.get_path()
-        print("checkout %s:%s to:%s\n" % (self.pdt, self.tag, self.code_path))
-        os.chdir(self.code_path)
-        self.generate_makefile(data_json)
+        if not os.path.isdir(self.path):
+            os.makedirs(self.path)
+        os.chdir(self.path)
+        self.gen_makefile(data_json[self.pdt][self.tag])
         result = os.system('make -j16')
-        # result = 0
         if result != 0:
-            self.result = 'ERR'
             print('failed')
+            return
         else:
-            self.result = 'OK'
             print('success')
-        self.generate_verinfo(data_json)
+        self.gen_verinfo(data_json[self.pdt][self.tag])
         self.write_logs()
-        if self.print:
+        if self.info:
             self.print_head(data_json)
 
 
@@ -319,10 +263,10 @@ class zpm_conf(object):
         if id is None:
             print('failed for git config!')
             return
-        cache_path = os.path.join(home_path, '.zpm', 'cache')
+        cache_path = os.path.join(HOME_DIR, '.zpm', 'cache')
         if not os.path.isdir(cache_path):
             os.makedirs(cache_path)
-        repo_path = os.path.join(home_path, '.zpm', 'repo')
+        repo_path = os.path.join(HOME_DIR, '.zpm', 'repo')
         if not os.path.isdir(repo_path):
             os.makedirs(repo_path)
         title = {'name': 'NAME', 'version': 'VERSION', 'date': 'DATE', 'push': 'PUSHABLE', 'path': 'PATH'}
@@ -347,8 +291,8 @@ class zpm_conf(object):
         print('finish!')
 
     def conf_export(self):
-        conf_file = os.path.join(home_path, '.zpm', 'repo', 'resources', 'config.json')
-        home_file = os.path.join(home_path, 'config.json')
+        conf_file = os.path.join(HOME_DIR, '.zpm', 'repo', 'resources', 'config.json')
+        home_file = os.path.join(HOME_DIR, 'config.json')
         if os.path.isfile(home_file):
             print("success !")
             return
@@ -359,7 +303,7 @@ class zpm_conf(object):
             print("no config file found,recheck it!")
 
     def conf_push(self):
-        conf_path = os.path.join(home_path, '.zpm', 'repo', 'resources')
+        conf_path = os.path.join(HOME_DIR, '.zpm', 'repo', 'resources')
         os.chdir(conf_path)
         os.system('git add config.json')
         os.system('git commit -m "change config.json"')
@@ -367,8 +311,8 @@ class zpm_conf(object):
         print('finish!')
 
     def conf_clean(self):
-        conf_path = os.path.join(home_path, '.zpm')
-        conf_link = os.path.join(home_path, 'config.json')
+        conf_path = os.path.join(HOME_DIR, '.zpm')
+        conf_link = os.path.join(HOME_DIR, 'config.json')
         cmd1 = 'rm -rf ' + conf_path
         cmd2 = 'rm -rf ' + conf_link
         os.system(cmd1)
@@ -376,7 +320,7 @@ class zpm_conf(object):
         print('finish!')
 
     def run(self):
-        os.chdir(home_path)
+        os.chdir(HOME_DIR)
         if self.init:
             self.conf_init()
             return
@@ -452,22 +396,9 @@ class zpm_query(object):
 
 
 def pull(args):
-    print('---------')
-    # print(args)
-    if args.pt.count(":") == 0:
-        pdt = args.pt
-        tag = 'default'
-    elif args.pt.count(":") == 1:
-        pdt = args.pt.split(":")[0]
-        tag = args.pt.split(":")[1]
-    else:
-        print("please input [PRODUCT:TAG]\n")
-        return
-    # print(pdt, tag)
-    if args.workpath is not None:
-        aa = zpm_pull(pdt, tag, args.workpath[0], args.l, args.c, args.u, args.name, args.p)
-    else:
-        aa = zpm_pull(pdt, tag, None, args.l, args.c, args.u, args.name, args.p)
+    logging.debug(args)
+    logging.info(f'will checkout {args.pdt}:{args.tag} to {args.work}')
+    aa = ZpmPull(args.pdt, args.tag, args.work, args.local, args.ci, args.update, args.name, args.info)
     aa.run()
 
 
@@ -482,7 +413,8 @@ def ps(args):
     f = open(log_file, 'r')
     logs = json.load(f)
     for log in logs:
-        print("{0:8}\t{1:10}\t{2:20}\t{3:8}\t{4}".format(log['name'], log['version'], log['date'], log['push'],log['path']))
+        print("{0:8}\t{1:10}\t{2:20}\t{3:8}\t{4}".format(log['name'], log['version'], log['date'], log['push'],
+                                                         log['path']))
     f.close()
 
 
@@ -514,11 +446,26 @@ def query(args):
     qq.run()
 
 
-def main():
-    if len(sys.argv) < 2:
-        print("Run zpm -h for more information.")
-        return
+class PullAction(argparse.Action):
+    def __init__(self, option_strings, dest, nargs=None, **kwargs):
+        if nargs is not None:
+            raise ValueError("nargs not allowed")
+        super(PullAction, self).__init__(option_strings, dest, **kwargs)
 
+    def __call__(self, parser, namespace, values, option_string=None):
+        logging.debug('%r %r' % (namespace, values))
+        colon_cnt = values.count(":")
+        assert colon_cnt < 2, "please input [PRODUCT:TAG]\n"
+        _pdt = values.split(":")[0] if colon_cnt == 1 else values
+        _tag = values.split(":")[1] if colon_cnt == 1 else 'default'
+        logging.debug('%r %r' % (_pdt, _tag))
+        setattr(namespace, 'pdt', _pdt)
+        setattr(namespace, 'tag', _tag)
+
+
+def main():
+    assert len(sys.argv) >= 2, "Run zpm -h for more information."
+    assert os.path.isfile(GIT_CONF_FILE), f'please make sure {GIT_CONF_FILE} is exist,which is needed.'
     parse = argparse.ArgumentParser(prog='python3 zpm', usage='%(prog)s',
                                     formatter_class=argparse.ArgumentDefaultsHelpFormatter,
                                     description="zxcsp package manager, version : 0.2",
@@ -528,14 +475,18 @@ def main():
     subparsers = parse.add_subparsers(title='COMMANDS')
 
     parser_pull = subparsers.add_parser('pull', help='download code version')
-    parser_pull.add_argument('pt', metavar='PRODUCT:TAG',
+    parser_pull.add_argument('pdt_tag', metavar='PRODUCT:TAG', action=PullAction,
                              help='specify the tag and product to download,see in config.json')
-    parser_pull.add_argument('-n', '--name', nargs=1, help='Assign a name to the code version')
-    parser_pull.add_argument('-w', '--workpath', nargs=1, help='Assign the directory to store the code')
-    parser_pull.add_argument('-l', action='store_true', help='Using local cache repertories instead of gerrit')
-    parser_pull.add_argument('-u', action='store_true', help='Update local cache repertories before download')
-    parser_pull.add_argument('-c', action='store_true', help='Running for ci,a special tag')
-    parser_pull.add_argument('-p', action='store_true', help='Print head commit info')
+    parser_pull.add_argument('-n', '--name', nargs='?', const=RANDOM_NAME, default=RANDOM_NAME,
+                             help='Assign a name to the code version')
+    parser_pull.add_argument('-w', '--work', nargs='?', const=CUR_DIR, default=CUR_DIR,
+                             help='Assign the directory to store the code')
+    parser_pull.add_argument('-l', action='store_true', dest='local',
+                             help='Using local cache repertories instead of gerrit')
+    parser_pull.add_argument('-u', action='store_true', dest='update',
+                             help='Update local cache repertories before download')
+    parser_pull.add_argument('-c', action='store_true', dest='ci', help='Running for ci,a special tag')
+    parser_pull.add_argument('-p', action='store_true', dest='info', help='Print head commit info')
     parser_pull.set_defaults(func=pull)
 
     parser_config = subparsers.add_parser('config', help='handle with config file')
