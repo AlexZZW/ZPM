@@ -1,11 +1,11 @@
-# !/usr/bin/python3
+#!/usr/bin/env python
 # -*- coding:utf-8 _*-
 """
 @version:
 author:10186954
 @time: 2018/09/05
 @file: zpm.py
-@function:
+@function: zpm包管理器，代码下载
 @modify:
 """
 import csv
@@ -13,33 +13,37 @@ import json
 import logging
 import random
 import string
-import sys, os
+import sys
+import os
 import subprocess
 import argparse
-
 import re
 import tempfile
+import time
+import datetime
 
-import time, datetime
-
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.INFO)
 
 CUR_DIR = os.getcwd()
 HOME_DIR = os.path.expanduser('~')
 RANDOM_NAME = ''.join(random.sample(string.ascii_letters + string.digits, 8))
+ZPM_ROOT_DIR = os.path.join(HOME_DIR, '.zpm')
 CONF_FILE_NAME = 'config.json'
 CONF_FILE_1ST = os.path.join(CUR_DIR, CONF_FILE_NAME)
 CONF_FILE_2ND = os.path.join(HOME_DIR, CONF_FILE_NAME)
-CONF_FILE_3RD = os.path.join(HOME_DIR, '.zpm', 'repo', 'resources', CONF_FILE_NAME)
-LOCAL_CACHE_DIR = os.path.join(HOME_DIR, '.zpm', 'cache')
+CONF_FILE_3RD = os.path.join(ZPM_ROOT_DIR, 'repo', 'resources', CONF_FILE_NAME)
+LOCAL_CACHE_DIR = os.path.join(ZPM_ROOT_DIR, 'cache')
+LOCAL_REPO_DIR = os.path.join(ZPM_ROOT_DIR, 'repo')
+LOCAL_LOG_FILE = os.path.join(ZPM_ROOT_DIR, 'logs.json')
 GIT_CONF_FILE = os.path.join(HOME_DIR, '.gitconfig')
-log_file = os.path.join(HOME_DIR, '.zpm', 'logs.json')
+COMPANY = 'xxx'
+USER_ID = None
 
 
 def big_execl(cmd):
     out_temp = tempfile.SpooledTemporaryFile(max_size=100 * 1000)
-    fileno = out_temp.fileno()
-    obj = subprocess.Popen(cmd, shell=True, stdout=fileno, stderr=fileno, close_fds=True)
+    file_no = out_temp.fileno()
+    obj = subprocess.Popen(cmd, shell=True, stdout=file_no, stderr=file_no, close_fds=True)
     obj.wait()
     out_temp.seek(0)
     lines = out_temp.read().decode('utf-8')
@@ -49,18 +53,14 @@ def big_execl(cmd):
 def execl(cmd, print_res):
     res = subprocess.Popen(cmd, shell=True, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                            close_fds=True)
-    errinfo = res.stderr.read().decode('utf-8').strip()
+    err_info = res.stderr.read().decode('utf-8').strip()
     data = res.stdout.read().decode('utf-8').strip()
-    if errinfo == '':
-        if print_res:
-            print(data)
-        return data
-    else:
-        print(data)
-        print(errinfo)
-        print('---------')
-        print('failed')
+    if err_info:
+        logging.error(err_info)
         return None
+    if print_res:
+        logging.info(data)
+    return data
 
 
 def get_git_conf():
@@ -70,12 +70,15 @@ def get_git_conf():
             if 'name' in line.strip():
                 ids = pattern.findall(line.strip())
                 logging.debug(f'get git config id:{ids}')
+                global USER_ID
+                USER_ID = ids[0]
                 return ids[0]
     assert False, 'Git is not configured.See git config --list for more infomation.'
 
 
 def change_id(cmd):
-    data = re.sub(r'12345678', get_git_conf(), cmd)
+    uid = USER_ID if USER_ID else get_git_conf()
+    data = re.sub(r'12345678', uid, cmd)
     return data
 
 
@@ -89,6 +92,7 @@ class ZpmPull(object):
         self.update = update
         self.name = name
         self.info = info
+        self.log_to_file = False
 
     @staticmethod
     def get_config():
@@ -106,10 +110,10 @@ class ZpmPull(object):
             conf_data = json.load(f)
         return conf_data
 
-    def get_remote_clone(self, cmd_b, repo, path, output=False):
+    def get_remote_clone(self, cmd_b, repo, path, output):
         flag = '' if output else '@'
-        domain_public = 'xxxxxxxx@xxx.com.cn'
-        domain_private = '12345678@xxx.com.cn'
+        domain_public = f'jenkins_fnnj@gerritro.{COMPANY}.com.cn'
+        domain_private = f'12345678@gerritro.{COMPANY}.com.cn'
         port = '29418'
         if self.ci:
             return f'{flag}git clone -q {cmd_b} ssh://{domain_public}:{port}/{repo} {path}'
@@ -152,7 +156,7 @@ class ZpmPull(object):
                 self.download_cache(cmd_b, repo, path, cache_path)
             cmd_full = f'@git clone -q {cmd_b} {git_path} {path}'
         else:
-            cmd_full = self.get_remote_clone(cmd_b, repo, path)
+            cmd_full = self.get_remote_clone(cmd_b, repo, path, False)
         return cmd_full
 
     def gen_makefile(self, repo_infos):
@@ -203,25 +207,23 @@ class ZpmPull(object):
             'push': push,
             'path': self.path
         }
-        logging.debug(data)
-        return
-        f = open(log_file, 'r')
+        logging.info(data)
+        if not self.log_to_file:
+            return
+        f = open(LOCAL_LOG_FILE, 'r')
         logs = json.load(f)
         f.close()
         logs.append(data)
-        f = open(log_file, 'w')
-        json.dump(logs, f)
-        f.close()
+        with open(LOCAL_LOG_FILE, 'w') as f:
+            json.dump(logs, f)
 
-    def print_head(self, data_json):
+    def print_head(self, repo_infos):
+        if not self.info:
+            return
         os.chdir(self.path)
         git_cmd = 'git log -1 --oneline'
-        for info in (data_json[self.pdt][self.tag]):
-            if 'path' in info and info['path'] is not None:
-                sub_path = info['path']
-            else:
-                sub_path = info['repo']
-            print(sub_path)
+        for info in repo_infos:
+            sub_path = info['path'] if 'path' in info and info['path'] is not None else info['repo']
             os.chdir(sub_path)
             execl(git_cmd, True)
             os.chdir(self.path)
@@ -236,88 +238,75 @@ class ZpmPull(object):
         if result != 0:
             print('failed')
             return
-        else:
-            print('success')
+        logging.info('make success')
         self.gen_verinfo(data_json[self.pdt][self.tag])
         self.write_logs()
-        if self.info:
-            self.print_head(data_json)
+        self.print_head(data_json[self.pdt][self.tag])
 
 
-class zpm_conf(object):
+class ZpmConfigure(object):
     def __init__(self, init, export, push, clean):
         self.init = init
         self.export = export
         self.push = push
         self.clean = clean
 
-    def get_remote_cmd(self):
-        cmd = 'git remote add origin ssh://12345678@xxx.com.cn:29418/xxx/ci'
+    @staticmethod
+    def get_remote_cmd():
+        domain_private = f'12345678@gerritro.{COMPANY}.com.cn'
+        port = '29418'
+        cmd = f'git remote add origin ssh://{domain_private}:{port}/zxcsp/ci'
         cmd = change_id(cmd)
-        hook = 'scp -p -P 29418 12345678@xxx.com.cn:hooks/commit-msg .git/hooks/'
+        hook = f'scp -p -P 29418 {domain_private}:hooks/commit-msg .git/hooks/'
         hook = change_id(hook)
         return cmd, hook
 
     def conf_init(self):
-        id = get_git_conf()
-        if id is None:
-            print('failed for git config!')
-            return
-        cache_path = os.path.join(HOME_DIR, '.zpm', 'cache')
-        if not os.path.isdir(cache_path):
-            os.makedirs(cache_path)
-        repo_path = os.path.join(HOME_DIR, '.zpm', 'repo')
-        if not os.path.isdir(repo_path):
-            os.makedirs(repo_path)
+        get_git_conf()
+        if not os.path.isdir(LOCAL_CACHE_DIR):
+            os.makedirs(LOCAL_CACHE_DIR)
+        if not os.path.isdir(LOCAL_REPO_DIR):
+            os.makedirs(LOCAL_REPO_DIR)
         title = {'name': 'NAME', 'version': 'VERSION', 'date': 'DATE', 'push': 'PUSHABLE', 'path': 'PATH'}
         data = [title]
-        if not os.path.isfile(log_file):
-            f = open(log_file, 'w')
-            json.dump(data, f)
-            f.close()
-        if not os.path.isfile(log_file):
-            print('error')
-            return
-        os.chdir(repo_path)
+        if not os.path.isfile(LOCAL_LOG_FILE):
+            with open(LOCAL_LOG_FILE, 'w') as f:
+                json.dump(data, f)
+        os.chdir(LOCAL_REPO_DIR)
         remote_cmd, hook = self.get_remote_cmd()
-        if remote_cmd is None or hook is None:
-            print('error')
-            return
-        os.system('git init && git config core.sparseCheckout true')
-        os.system('echo /resources/config.json > .git/info/sparse-checkout')
+        os.system('git init && git config core.sparseCheckout true')  # 开启稀疏检出
+        os.system('echo /resources/config.json > .git/info/sparse-checkout')  # 设置只检出的文件
         os.system(remote_cmd)
         os.system(hook)
         os.system('git pull -q origin ossci')
-        print('finish!')
+        logging.info('finish!')
 
-    def conf_export(self):
-        conf_file = os.path.join(HOME_DIR, '.zpm', 'repo', 'resources', 'config.json')
-        home_file = os.path.join(HOME_DIR, 'config.json')
-        if os.path.isfile(home_file):
-            print("success !")
+    @staticmethod
+    def conf_export():
+        if os.path.isfile(CONF_FILE_2ND):
+            logging.info("exist success !")
             return
-        if os.path.isfile(conf_file):
-            os.symlink(conf_file, home_file)
-            print("success!")
+        if os.path.isfile(CONF_FILE_3RD):
+            os.symlink(CONF_FILE_3RD, CONF_FILE_2ND)
+            logging.warning("link success!")
         else:
-            print("no config file found,recheck it!")
+            logging.error("no config file found,recheck it!")
 
-    def conf_push(self):
-        conf_path = os.path.join(HOME_DIR, '.zpm', 'repo', 'resources')
+    @staticmethod
+    def conf_push():
+        conf_path = os.path.join(LOCAL_REPO_DIR, 'resources')
         os.chdir(conf_path)
         os.system('git add config.json')
         os.system('git commit -m "change config.json"')
-        os.system('git push -q origin HEAD:refs/for/ossci%r=xxx@xxx.com.cn')
-        print('finish!')
+        os.system('git push -q origin HEAD:refs/for/ossci')
+        # os.system('git push -q origin HEAD:refs/for/ossci%r=xxx@xxx.com.cn')  add reviewer
+        logging.info('finish!')
 
-    def conf_clean(self):
-        conf_path = os.path.join(HOME_DIR, '.zpm')
-        conf_link = os.path.join(HOME_DIR, 'config.json')
-        cmd1 = 'rm -rf ' + conf_path
-        cmd2 = 'rm -rf ' + conf_link
-        os.system(cmd1)
-        os.system(cmd2)
-        print('finish!')
+    @staticmethod
+    def conf_clean():
+        os.system(f'rm -rf {ZPM_ROOT_DIR}')
+        os.system(f'rm -rf {CONF_FILE_2ND}')
+        logging.info('finish!')
 
     def run(self):
         os.chdir(HOME_DIR)
@@ -335,64 +324,56 @@ class zpm_conf(object):
             return
 
 
-class zpm_search(object):
+class ZpmSearch(object):
     def __init__(self, pattern):
         self.pattern = pattern
 
     def run(self):
-        print(self.pattern)
-        print('---------')
-        cmd = 'ssh -p 29418 12345678@xxx.com.cn gerrit ls-projects | grep ' + '"' + self.pattern + '"'
+        domain_private = f'12345678@gerrit.{COMPANY}.com.cn'
+        port = '29418'
+        cmd = f'ssh -p {port} {domain_private} gerrit ls-projects | grep "{self.pattern}"'
         cmd = change_id(cmd)
+        logging.debug(cmd)
         execl(cmd, True)
 
 
-class zpm_query(object):
+class ZpmQuery(object):
     def __init__(self, pattern):
         self.pattern = pattern
 
-    def remove_unnecessary_words(self, data):
-        remove = re.compile(r'{"type":"stats","rowCount.*')
-        ret_data = re.sub(remove, '', data)
-        return ret_data
-
-    def write_to_csv(self):
-        pass
-
     def run(self):
-        print(self.pattern)
-        print('---------')
-        cmd = 'ssh -p 29418 12345678@xxx.com.cn gerrit query --format=JSON ' + self.pattern
+        domain_private = f'12345678@gerrit.{COMPANY}.com.cn'
+        port = '29418'
+        cmd = f'ssh -p {port} {domain_private} gerrit query --format=JSON {self.pattern}'
         cmd = change_id(cmd)
-        # print(cmd)
+        logging.debug(cmd)
         data = big_execl(cmd)
-        list = data.splitlines()
+        gerrit_info_list = data.splitlines()
         file = 'gerrit.csv'
         if os.path.isfile(file):
             os.remove(file)
-        f = open(file, 'a', newline='')
-        fieldnames = ['project', 'branch', 'id', 'number', 'subject',
-                      'owner', 'url', 'createdOn', 'lastUpdated', 'status']
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        for json_str in list:
-            json_data = json.loads(json_str)
-            if json_str == list[-1]:
-                print("records : ", json_data['rowCount'])
-                break
-            # print(json_data['createdOn'])
-            writer.writerow({'project': json_data['project'],
-                             'branch': json_data['branch'],
-                             'id': json_data['id'],
-                             'number': json_data['number'],
-                             'subject': json_data['subject'].strip(),
-                             'owner': json_data['owner']['name'],
-                             'url': json_data['url'],
-                             'createdOn': time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(json_data['createdOn'])),
-                             'lastUpdated': time.strftime("%Y-%m-%d %H:%M:%S",
-                                                          time.localtime(json_data['lastUpdated'])),
-                             'status': json_data['status']})
-        f.close()
+        with open(file, 'a', newline='') as f:
+            fieldnames = ['project', 'branch', 'id', 'number', 'subject',
+                          'owner', 'url', 'createdOn', 'lastUpdated', 'status']
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            for json_str in gerrit_info_list:
+                json_data = json.loads(json_str)
+                if json_str == gerrit_info_list[-1]:
+                    logging.warning("records : ", json_data['rowCount'])
+                    break
+                writer.writerow({'project': json_data['project'],
+                                 'branch': json_data['branch'],
+                                 'id': json_data['id'],
+                                 'number': json_data['number'],
+                                 'subject': json_data['subject'].strip(),
+                                 'owner': json_data['owner']['name'],
+                                 'url': json_data['url'],
+                                 'createdOn': time.strftime("%Y-%m-%d %H:%M:%S",
+                                                            time.localtime(json_data['createdOn'])),
+                                 'lastUpdated': time.strftime("%Y-%m-%d %H:%M:%S",
+                                                              time.localtime(json_data['lastUpdated'])),
+                                 'status': json_data['status']})
 
 
 def pull(args):
@@ -403,52 +384,50 @@ def pull(args):
 
 
 def config(args):
-    # print(args)
-    conf = zpm_conf(args.init, args.export, args.push, args.clean)
+    logging.debug(args)
+    conf = ZpmConfigure(args.init, args.export, args.push, args.clean)
     conf.run()
 
 
 def ps(args):
-    # print(args)
-    f = open(log_file, 'r')
-    logs = json.load(f)
+    logging.debug(args)
+    with open(LOCAL_LOG_FILE, 'r') as f:
+        logs = json.load(f)
     for log in logs:
-        print("{0:8}\t{1:10}\t{2:20}\t{3:8}\t{4}".format(log['name'], log['version'], log['date'], log['push'],
-                                                         log['path']))
-    f.close()
+        print("{0:8}\t{1:10}\t{2:20}\t{3:8}\t{4}".format(log['name'],
+                                                         log['version'], log['date'], log['push'], log['path']))
 
 
 def rm(args):
-    f = open(log_file, 'r')
-    logs = json.load(f)
-    f.close()
+    logging.debug(args)
+    with open(LOCAL_LOG_FILE, 'r') as f:
+        logs = json.load(f)
     for log in logs:
         if args.name == log['name']:
-            print(args.name)
             path = log['path']
-            cmd = 'rm -rf ' + path
             if os.path.isdir(path):
-                os.system(cmd)
+                logging.warning(f'remove {args.name} in {path}')
+                os.system(f'rm -rf {path}')
             logs.remove(log)
-    f = open(log_file, 'w')
-    json.dump(logs, f)
-    f.close()
-    print('finish!')
+    with open(LOCAL_LOG_FILE, 'w') as f:
+        json.dump(logs, f)
 
 
 def search(args):
-    ss = zpm_search(args.pattern)
+    logging.debug(args)
+    ss = ZpmSearch(args.pattern)
     ss.run()
 
 
 def query(args):
-    qq = zpm_query(args.pattern)
+    logging.debug(args)
+    qq = ZpmQuery(args.pattern)
     qq.run()
 
 
 class PullAction(argparse.Action):
     def __init__(self, option_strings, dest, nargs=None, **kwargs):
-        if nargs is not None:
+        if nargs:
             raise ValueError("nargs not allowed")
         super(PullAction, self).__init__(option_strings, dest, **kwargs)
 
@@ -501,9 +480,6 @@ def main():
     parser_ps.set_defaults(func=ps)
 
     parser_rm = subparsers.add_parser('rm', help='remove code version')
-    # rm_group = parser_rm.add_mutually_exclusive_group()
-    # rm_group.add_argument('-n', '--name', nargs=1, help='Remove the code version with a name')
-    # rm_group.add_argument('-a', '--all', action='store_true', help='Remove all code version')
     parser_rm.add_argument('name', metavar='NAME', help='Remove the code version with a name')
     parser_rm.set_defaults(func=rm)
 
